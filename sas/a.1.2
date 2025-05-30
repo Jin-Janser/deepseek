@@ -1,0 +1,11 @@
+proc import datafile="your_path.csv" out=unemp dbms=csv replace;
+run;
+
+proc univariate data=unemp;
+  var Unemployment_Rate;
+  histogram / t;
+run;
+
+proc ttest data=unemp alpha=0.05;
+  var Unemployment_Rate;
+run;
