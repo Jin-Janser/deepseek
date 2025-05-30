@@ -1,0 +1,20 @@
+/* 데이터 로드 */
+proc import datafile='your_path.csv' out=students dbms=csv replace;
+run;
+
+/* 기술통계 */
+proc means data=students mean median std q1 q3 min max;
+var math_score reading_score writing_score;
+run;
+
+/* t-검정 */
+proc ttest data=students;
+class gender;
+var math_score reading_score writing_score;
+run;
+
+/* 시각화 */
+proc sgplot data=students;
+vbox math_score / category=gender;
+title "Math Score Distribution by Gender";
+run;
