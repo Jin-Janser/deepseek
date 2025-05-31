@@ -1,0 +1,74 @@
+# 필수 라이브러리 로드
+library(survival)
+library(survminer)
+library(dplyr)
+library(ggplot2)
+
+# 데이터 불러오기 (파일 경로 수정 필요)
+titanic <- read.csv("train.csv", stringsAsFactors = FALSE)
+
+# 결측치 처리
+titanic <- titanic %>%
+  mutate(
+    Age = ifelse(is.na(Age), median(Age, na.rm = TRUE), Age),
+    Embarked = ifelse(Embarked == "", names(sort(table(Embarked), decreasing = TRUE))[1], Embarked)
+  )
+
+# 범주형 변수 변환
+titanic <- titanic %>%
+  mutate(
+    Sex = factor(Sex, levels = c("male", "female")),
+    Pclass = factor(Pclass),
+    Survived = as.numeric(Survived)
+  )
+
+# 생존분석용 시간 변수 생성 (사건 발생 시간을 1로 고정)
+titanic$time <- rep(1, nrow(titanic))
+
+# Kaplan-Meier 곡선 추정
+km_sex <- survfit(Surv(time, Survived) ~ Sex, data = titanic)
+
+# 시각화
+ggsurvplot(km_sex, 
+           palette = c("#E7B800", "#2E9FDF"),
+           legend.title = "성별",
+           legend.labs = c("남성", "여성"),
+           xlab = "시간 (단위: 항해일)",
+           ylab = "생존 확률",
+           title = "성별에 따른 생존 곡선")
+
+# 로그-순위 검정
+survdiff(Surv(time, Survived) ~ Sex, data = titanic)
+
+km_class <- survfit(Surv(time, Survived) ~ Pclass, data = titanic)
+
+ggsurvplot(km_class,
+           palette = c("#D55E00", "#56B4E9", "#009E73"),
+           legend.title = "객실 등급",
+           xlab = "시간 (단위: 항해일)",
+           ylab = "생존 확률",
+           title = "객실 등급에 따른 생존 곡선")
+
+survdiff(Surv(time, Survived) ~ Pclass, data = titanic)
+
+# 예측 프로필 생성
+new_data <- data.frame(
+  Pclass = factor(1, levels = c(1,2,3)),
+  Sex = factor("female", levels = c("male", "female")),
+  Age = 30,
+  SibSp = 0,
+  Parch = 0,
+  Fare = median(titanic$Fare[titanic$Pclass == 1], na.rm = TRUE)
+)
+
+# 생존 함수 예측
+surv_fit <- survfit(cox_model, newdata = new_data)
+
+# 시각화
+ggplot(data.frame(time = surv_fit$time, surv = surv_fit$surv), aes(x = time, y = surv)) +
+  geom_line(color = "#0072B2", linewidth = 1.5) +
+  labs(title = "30세 여성 1등석 승객 생존 확률",
+       x = "시간 (항해일)",
+       y = "생존 확률") +
+  ylim(0, 1) +
+  theme_minimal()
