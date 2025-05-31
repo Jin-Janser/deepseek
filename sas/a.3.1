@@ -1,0 +1,65 @@
+/* 데이터 로드 및 전처리 */
+proc import datafile='iris.csv' out=iris dbms=csv replace;
+run;
+
+proc univariate data=iris noprint;
+  var SepalLength SepalWidth PetalLength PetalWidth;
+  output out=iqr pctlpts=25 75 pctlpre=P25_ P75_;
+run;
+
+data iris_clean;
+  if _N_=1 then set iqr;
+  set iris;
+  array X{4} SepalLength SepalWidth PetalLength PetalWidth;
+  array P25{4} P25_SepalLength P25_SepalWidth P25_PetalLength P25_PetalWidth;
+  array P75{4} P75_SepalLength P75_SepalWidth P75_PetalLength P75_PetalWidth;
+  do i=1 to 4;
+    iqr = P75{i} - P25{i};
+    if X{i} < P25{i}-1.5*iqr or X{i} > P75{i}+1.5*iqr then delete;
+  end;
+  drop P25_: P75_: i iqr;
+run;
+
+proc standard data=iris_clean mean=0 std=1 out=iris_std;
+  var SepalLength SepalWidth PetalLength PetalWidth;
+run;
+
+/* PCA 분석 */
+proc princomp data=iris_std out=pca_scores outstat=pca_stat;
+  var SepalLength SepalWidth PetalLength PetalWidth;
+run;
+
+proc sgplot data=pca_stat(where=(_TYPE_='EIGENVAL'));
+  series x=_N_ y=Prin1 / markers lineattrs=(color=navy);
+  title 'Scree Plot';
+run;
+
+/* K-means 군집 */
+proc fastclus data=iris_std maxclusters=3 out=km_out;
+  var SepalLength SepalWidth PetalLength PetalWidth;
+run;
+
+/* 계층적 군집 */
+proc cluster data=iris_std method=ward outtree=tree noprint;
+  var SepalLength SepalWidth PetalLength PetalWidth;
+run;
+proc tree data=tree nclusters=3 out=hc_out noprint;
+run;
+
+/* 결과 통합 */
+data clusters;
+  merge iris_std km_out(keep=cluster rename=(cluster=KMeans))
+        hc_out(keep=cluster rename=(cluster=Hierarchical));
+  by _N_;
+run;
+
+/* 시각화 */
+proc sgplot data=pca_scores;
+  scatter x=Prin1 y=Prin2 / group=KMeans;
+  title 'K-means Clusters in PCA Space';
+run;
+
+proc sgplot data=pca_scores;
+  scatter x=Prin1 y=Prin2 / group=Hierarchical;
+  title 'Hierarchical Clusters in PCA Space';
+run;
