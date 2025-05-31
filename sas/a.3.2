@@ -1,0 +1,70 @@
+/* 1. 데이터 전처리 */
+proc import datafile="seer_cancer.csv" out=seer dbms=csv replace;
+run;
+
+/* 결측치 처리 */
+proc mi data=seer nimpute=5 out=seer_clean;
+    var cases population age_group race sex;
+run;
+
+/* 공간 가중치 행렬 생성 */
+proc sql;
+    create table coords as
+    select distinct region_id, lat, lon
+    from seer_clean;
+quit;
+
+proc distance data=coords out=distances method=euclid;
+    var interval(lat lon);
+run;
+
+data W_matrix;
+    set distances;
+    if distance <= 100 then weight=1;
+    else weight=0;
+    keep region_i region_j weight;
+run;
+
+/* 2. 계층적 베이지안 모델 */
+proc mcmc data=seer_clean nmc=10000 seed=12345;
+    parms beta0 0 beta_age 0 beta_race 0 beta_sex 0;
+    parms sigma2_region 1;
+    
+    prior beta: ~ normal(0, var=100);
+    prior sigma2_region ~ igamma(0.01, scale=0.01);
+    
+    random region_effect ~ normal(0, var=sigma2_region) subject=region_id;
+    
+    lambda = exp(beta0 + region_effect + 
+                beta_age*age_group + beta_race*race + beta_sex*sex + log_pop);
+    model cases ~ poisson(lambda);
+    
+    ods output PostSummaries=Hierarchical_Results;
+run;
+
+/* 3. 공간적 CAR 모델 */ 
+proc mcmc data=seer_clean nmc=15000 seed=54321;
+    parms rho 0.5 tau2 1;
+    
+    prior rho ~ uniform(0, 1);
+    prior tau2 ~ igamma(0.01, scale=0.01);
+    
+    car_prior: 
+        spatial_car = car(region_id, W_matrix, rho, tau2);
+    
+    lambda = exp(beta0 + spatial_car + 
+                beta_age*age_group + beta_race*race + beta_sex*sex + log_pop);
+    model cases ~ poisson(lambda);
+    
+    ods output PostSummaries=Spatial_Results;
+run;
+
+/* 4. 모델 비교 */
+proc compare base=Hierarchical_Results compare=Spatial_Results;
+run;
+
+/* 5. 시각화 */
+proc sgplot data=Hierarchical_Results;
+    series x=iteration y=beta_age / legendlabel="연령 효과";
+    series x=iteration y=beta_race / legendlabel="인종 효과";
+run;
