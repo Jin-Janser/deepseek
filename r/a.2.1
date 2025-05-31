@@ -1,0 +1,39 @@
+library(mice)
+library(caret)
+library(catboost)
+
+# 데이터 로드
+df <- read.csv('train.csv', na.strings = c('', 'NA'))
+
+# 결측치 처리
+imp <- mice(df, m=5, method='pmm', seed=123)
+df <- complete(imp)
+
+# 파생변수 생성
+df$RemodelAge <- df$YearRemodAdd - df$YearBuilt
+
+# Target Encoding
+recipe <- recipe(SalePrice ~ ., data = df) %>%
+  step_impute_mode(all_nominal()) %>%
+  step_target_encoding(all_nominal(), outcome = vars(SalePrice))
+
+prep <- prep(recipe, training = df)
+df_encoded <- bake(prep, new_data = df)
+
+# VIF 기반 변수 선택
+model <- lm(SalePrice ~ ., data=df_encoded)
+vif_values <- car::vif(model)
+selected_vars <- names(vif_values[vif_values < 5])
+
+# 최종 모델
+final_model <- train(
+  SalePrice ~ .,
+  data = df_encoded[,c(selected_vars, 'SalePrice')],
+  method = 'glmnet',
+  trControl = trainControl(method = 'cv', number = 10)
+)
+
+# SHAP 값 계산
+explainer <- shapviz(final_model, X_pred = as.matrix(df_encoded[selected_vars]))
+shap_plot <- sv_importance(explainer, kind = 'beeswarm')
+print(shap_plot)
