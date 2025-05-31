@@ -1,0 +1,31 @@
+/* 데이터 로드 */
+proc import datafile="train.csv" out=houses dbms=csv replace;
+run;
+
+/* 결측치 처리 */
+proc mi data=houses nimpute=5 out=imputed;
+  var _numeric_;
+run;
+
+/* 파생변수 생성 */
+data houses;
+  set imputed;
+  RemodelAge = YearRemodAdd - YearBuilt;
+run;
+
+/* Target Encoding */
+proc stdize data=houses out=encoded method=target;
+  class _char_;
+  var SalePrice;
+run;
+
+/* VIF 기반 변수 선택 */
+proc reg data=encoded;
+  model SalePrice = _numeric_ / vif;
+  output out=selected_vars(where=(vif < 5));
+run;
+
+/* 최종 모델 */
+proc glmselect data=selected_vars;
+  model SalePrice = &_GLSMOD / selection=stepwise;
+run;
