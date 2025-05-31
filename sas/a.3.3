@@ -1,0 +1,72 @@
+/* 1.1 데이터 불러오기 */
+proc import datafile="train.csv" out=titanic dbms=csv replace;
+    getnames=yes;
+run;
+
+/* 1.2 결측치 처리 */
+proc sql;
+  create table titanic2 as
+  select *,
+    coalesce(Age, median(Age)) as Age_imp,
+    case when Embarked is missing then 'S' else Embarked end as Embarked_imp
+  from titanic;
+quit;
+
+/* 1.3 범주형 변수 인코딩 */
+proc format;
+  value sexfmt 0='male' 1='female';
+  value pclassfmt 1='1st' 2='2nd' 3='3rd';
+run;
+
+data titanic_final;
+  set titanic2;
+  label Survived='생존여부(0:사망,1:생존)';
+  format Sex sexfmt. Pclass pclassfmt.;
+run;
+
+ods graphics on;
+
+proc lifetest data=titanic_final plots=survival(atrisk cl);
+  time Age_imp*Survived(0);
+  strata Sex / test=logrank;
+  format Sex sexfmt.;
+  title "성별별 생존 곡선";
+run;
+
+proc lifetest data=titanic_final plots=survival(atrisk cl);
+  time Age_imp*Survived(0);
+  strata Pclass / test=logrank;
+  format Pclass pclassfmt.;
+  title "객실 등급별 생존 곡선";
+run;
+
+proc phreg data=titanic_final;
+  class Sex(ref='male') Pclass(ref='3rd') / param=ref;
+  model Age_imp*Survived(0) = Pclass Sex Age_imp SibSp Parch Fare
+        / ties=efron rl;
+  hazardratio 'Hazard Ratio' Sex / diff=ref at(Sex='female');
+  hazardratio 'Hazard Ratio' Pclass / diff=ref at(Pclass='1st');
+  assess ph / resample;
+  title "Cox 비례위험 모델 결과";
+run;
+
+/* 프로필 데이터 생성 */
+data new_profile;
+  input Pclass Sex $ Age SibSp Parch Fare;
+  datalines;
+1 female 30 0 0 30
+;
+
+/* 생존 확률 예측 */
+proc phreg data=titanic_final noprint;
+  model Age_imp*Survived(0) = Pclass Sex Age_imp SibSp Parch Fare;
+  baseline covariates=new_profile out=surv_pred / survival=all method=pl;
+run;
+
+/* 시각화 */
+proc sgplot data=surv_pred;
+  series x=Age_imp y=Survival / markers lineattrs=(thickness=2 color=blue);
+  xaxis label="Age";
+  yaxis label="Survival Probability";
+  title "30세 여성 1등석 생존 확률";
+run;
