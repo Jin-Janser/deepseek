@@ -1,0 +1,119 @@
+/* 데이터 생성 및 라이브러리 설정 */
+libname inc "C:/temp";
+
+data inc.income_data;
+    call streaminit(123);
+    do i = 1 to 5000;
+        /* 인구통계학적 변수 생성 */
+        gender = ifn(rand('uniform') < 0.52, 'Male', 'Female');
+        education = scan('High School,Bachelor,Master,PhD', ceil(rand('uniform')*4));
+        experience = max(0, int(rand('normal')*15 + 10));
+        income = 30000 + 15000*rank(education) + 500*experience + 5000*rand('normal');
+        output;
+    end;
+    keep gender education experience income;
+run;
+
+/* 결측치 및 이상치 처리 */
+proc means data=inc.income_data n nmiss;
+    var income;
+run;
+
+proc univariate data=inc.income_data;
+    var income;
+    histogram / kernel;
+run;
+
+/* 전체 소득 분포 분석 */
+proc kde data=inc.income_data;
+    univar income / out=kde_all plots=density;
+run;
+
+/* 성별별 밀도 추정 */
+proc kde data=inc.income_data;
+    univar income / group=gender out=kde_gender
+    plots=densityoverlay;
+run;
+
+/* 교육 수준별 밀도 추정 */
+proc kde data=inc.income_data;
+    class education;
+    univar income / out=kde_edu
+    plots=all;
+run;
+
+/* 대역폭 선택 결과 출력 */
+proc print data=kde_all(obs=1);
+    var bandwidth;
+    title 'Optimal Bandwidth for Overall Income';
+run;
+
+/* 지니 계수 계산 매크로 */
+%macro gini(data=, var=);
+    proc sql noprint;
+        create table gini_temp as
+        select &var as x from &data;
+        
+        select (1 - 2*sum(cumsum*(x - lag(x))/sum(x))) 
+        into :gini
+        from (select x, sum(x) as cumsum 
+              from gini_temp 
+              group by x);
+    quit;
+    %put Gini Coefficient: &gini;
+%mend;
+
+/* 앳킨슨 지수 계산 */
+proc iml;
+    start atkinson(x, epsilon=0.5);
+        n = nrow(x);
+        if epsilon = 1 then do;
+            geom = exp(mean(log(x)));
+            return(1 - geom/mean(x));
+        end;
+        else do;
+            y = x##(1-epsilon);
+            ede = mean(y)##(1/(1-epsilon));
+            return(1 - ede/mean(x));
+        end;
+    finish;
+    
+    use inc.income_data;
+    read all var {income} into x;
+    a_idx = atkinson(x);
+    print a_idx;
+quit;
+
+/* 교육 수준 수치화 */
+data inc.income_analysis;
+    set inc.income_data;
+    select(education);
+        when('High School') edu_yrs = 12;
+        when('Bachelor') edu_yrs = 16;
+        when('Master') edu_yrs = 18;
+        when('PhD') edu_yrs = 22;
+    end;
+run;
+
+/* OLS 회귀 분석 */
+proc reg data=inc.income_analysis;
+    model income = edu_yrs experience;
+run;
+
+/* 분위 회귀 분석 */
+proc quantreg data=inc.income_analysis;
+    model income = edu_yrs experience / quantile=0.1 0.5 0.9;
+    output out=quant_out pred=p;
+run;
+
+/* 밀도 추정 시각화 */
+proc sgplot data=kde_gender;
+    series x=income y=density / group=gender;
+    title "Income Distribution by Gender";
+run;
+
+/* 분위 회귀 계수 비교 */
+proc sgplot data=quant_out;
+    series x=quantile y=Estimate / group=Variable;
+    title "Quantile Regression Coefficients";
+run;
