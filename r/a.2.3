@@ -1,49 +1,88 @@
 # 필요한 패키지 설치 및 로드
-library(forecast)
-library(rugarch)
-library(ggplot2)
-library(zoo)
+library(brms)
+library(tidyverse)
+library(bayesplot)
+library(loo)
 
-# 1. 데이터 준비
-dji <- read.csv("DJI_weekly.csv", stringsAsFactors = FALSE)
-dji$Date <- as.Date(dji$Date)
-dji <- dji[order(dji$Date), ]
-
-# 결측치 처리 (선형 보간)
-dji$Close <- na.approx(dji$Close)
-
-# 로그 수익률 계산
-dji$log_return <- c(NA, diff(log(dji$Close)))
-
-# 이상치 제거 (IQR 기준)
-Q <- quantile(dji$log_return, probs = c(0.25, 0.75), na.rm = TRUE)
-IQR <- Q[2] - Q[1]
-dji_clean <- subset(dji, log_return > (Q[1] - 1.5*IQR) & log_return < (Q[2] + 1.5*IQR))
-
-# 2. 시계열 분해 (STL)
-ts_data <- ts(dji_clean$log_return, frequency = 52)
-stl_decomp <- stl(ts_data, s.window = "periodic", robust = TRUE)
-
-# 시각화
-autoplot(stl_decomp) + ggtitle("STL Decomposition")
-
-# 3. ARIMA 모델링
-best_arima <- auto.arima(ts_data, seasonal = FALSE)
-arima_forecast <- forecast(best_arima, h = 8)
-
-# 결과 출력
-summary(best_arima)
-autoplot(arima_forecast)
-
-# 4. GARCH(1,1) 분석
-garch_spec <- ugarchspec(
-  variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
-  mean.model = list(armaOrder = c(0,0)),
-  distribution.model = "std"
+# 데이터 로드 및 병합
+red_wine <- read.csv("winequality-red.csv", sep = ";")
+white_wine <- read.csv("winequality-white.csv", sep = ";")
+wine_data <- bind_rows(
+  mutate(red_wine, type = "red"),
+  mutate(white_wine, type = "white")
 )
 
-garch_fit <- ugarchfit(garch_spec, dji_clean$log_return)
-garch_vol <- sigma(garch_fit)
+# 결측치 확인 및 처리
+sum(is.na(wine_data)) # 결측치 없음
 
-# 결과 출력
-plot(garch_vol, main = "Conditional Volatility (GARCH(1,1))")
+# 이상치 처리 (IQR 기준)
+wine_clean <- wine_data %>%
+  mutate(across(-c(quality, type), ~ {
+    q <- quantile(., c(0.25, 0.75))
+    iqr <- q[2] - q[1]
+    ifelse(. > q[2] + 1.5*iqr | . < q[1] - 1.5*iqr, NA, .)
+  })) %>%
+  drop_na()
+
+# 독립변수 표준화
+scaled_data <- wine_clean %>%
+  mutate(across(-c(quality, type), scale))
+
+# 종속변수 분포 확인
+table(scaled_data$quality) # 3-9점 범위, 5-7점에 89% 집중
+
+# 약하게 정보적 사전분포 모델
+model_weak <- brm(
+  quality ~ . - type,
+  data = scaled_data,
+  prior = set_prior("normal(0, 1)", class = "b"),
+  chains = 4, iter = 4000, cores = 4,
+  file = "model_weak"
+)
+
+# 사후 분포 요약
+summary_model_weak <- summary(model_weak)
+posterior_interval_weak <- posterior_interval(model_weak, prob = 0.95)
+
+# 수렴 진단
+rhat_values <- summary_model_weak$fixed[, "Rhat"]
+trace_plot <- mcmc_trace(model_weak)
+
+# 사후 분포 시각화
+posterior_plot <- mcmc_intervals(as.array(model_weak), pars = vars(-contains("Intercept")))
+
+# 사후 예측 분포
+pp_check(model_weak) + ggtitle("Posterior Predictive Check")
+
+# 모델 비교 시각화
+model_comp_plot <- plot(waic_comparison) + theme_minimal()
+
+# 전체 분석 파이프라인
+library(brms)
+library(tidyverse)
+library(bayesplot)
+
+# 1. 데이터 전처리
+wine_data <- bind_rows(
+  mutate(read.csv("winequality-red.csv", sep = ";"), type = "red"),
+  mutate(read.csv("winequality-white.csv", sep = ";"), type = "white")
+) %>%
+  drop_na() %>%
+  mutate(across(-c(quality, type), ~ scale(.)))
+
+# 2. 베이지안 모델링
+model_weak <- brm(
+  quality ~ . - type,
+  data = wine_data,
+  prior = set_prior("normal(0, 1)", class = "b"),
+  chains = 4, iter = 4000, cores = 4
+)
+
+# 3. 모델 비교
+model_interaction <- update(model_weak, formula = quality ~ alcohol * volatile_acidity + . - type)
+model_weights <- model_weights(model_weak, model_interaction)
+
+# 4. 시각화
+bayesplot_theme_set(theme_minimal())
+mcmc_areas(model_weak, pars = c("b_alcohol", "b_volatile_acidity")) +
+  ggtitle("Posterior Distributions")
