@@ -1,0 +1,154 @@
+/* 1. 데이터 로드 및 전처리 */
+proc import datafile='winequality.csv' out=wine dbms=csv replace;
+    getnames=yes;
+run;
+
+/* 결측치 확인 및 처리 */
+proc means data=wine nmiss;
+run;
+
+/* 독립변수 표준화 */
+proc standard data=wine out=wine_std mean=0 std=1;
+    var fixed_acidity volatile_acidity citric_acid residual_sugar
+        chlorides free_sulfur_dioxide total_sulfur_dioxide density
+        pH sulphates alcohol;
+run;
+
+/* 데이터 분할 (훈련:검증 = 8:2) */
+proc surveyselect data=wine_std out=wine_split seed=1234
+    samprate=0.8 outall;
+run;
+
+data wine_train wine_valid;
+    set wine_split;
+    if selected then output wine_train;
+    else output wine_valid;
+run;
+
+/* 2. 베이지안 회귀 모델 - 비정보적 사전분포 */
+ods graphics on;
+proc mcmc data=wine_train nmc=10000 nbi=5000 seed=1234
+    outpost=post_noninf monitor=(beta: sigma2 dic) dic;
+    
+    parms beta0-beta11;
+    parms sigma2;
+    
+    /* 사전분포 설정 */
+    prior beta: ~ normal(0, var=1000);  /* Non-informative */
+    prior sigma2 ~ igamma(shape=0.01, scale=0.01);
+    
+    /* 선형 예측값 계산 */
+    mu = beta0 + beta1*fixed_acidity + beta2*volatile_acidity
+        + beta3*citric_acid + beta4*residual_sugar
+        + beta5*chlorides + beta6*free_sulfur_dioxide
+        + beta7*total_sulfur_dioxide + beta8*density
+        + beta9*pH + beta10*sulphates + beta11*alcohol;
+    
+    /* 가능도 함수 */
+    model quality ~ normal(mu, var=sigma2);
+    
+    /* 사후 예측 분포 */
+    predict mu out=pred_noninf;
+run;
+ods graphics off;
+
+/* 3. 베이지안 회귀 모델 - 약정보적 사전분포 */
+ods graphics on;
+proc mcmc data=wine_train nmc=10000 nbi=5000 seed=1234
+    outpost=post_weak monitor=(beta: sigma2 dic) dic;
+    
+    parms beta0-beta11;
+    parms sigma2;
+    
+    /* 사전분포 설정 */
+    prior beta: ~ normal(0, var=1);  /* Weakly informative */
+    prior sigma2 ~ igamma(shape=3, scale=1);
+    
+    /* 선형 예측값 계산 */
+    mu = beta0 + beta1*fixed_acidity + beta2*volatile_acidity
+        + beta3*citric_acid + beta4*residual_sugar
+        + beta5*chlorides + beta6*free_sulfur_dioxide
+        + beta7*total_sulfur_dioxide + beta8*density
+        + beta9*pH + beta10*sulphates + beta11*alcohol;
+    
+    /* 가능도 함수 */
+    model quality ~ normal(mu, var=sigma2);
+    
+    /* 사후 예측 분포 */
+    predict mu out=pred_weak;
+run;
+ods graphics off;
+
+/* 4. 상호작용 모델 */
+ods graphics on;
+proc mcmc data=wine_train nmc=10000 nbi=5000 seed=1234
+    outpost=post_inter monitor=(beta: sigma2 dic) dic;
+    
+    parms beta0-beta13;
+    parms sigma2;
+    
+    /* 상호작용 항 생성 */
+    alcohol_volatile = alcohol*volatile_acidity;
+    sulphates_alcohol = sulphates*alcohol;
+    
+    /* 사전분포 설정 */
+    prior beta: ~ normal(0, var=1);
+    prior sigma2 ~ igamma(shape=3, scale=1);
+    
+    /* 선형 예측값 계산 */
+    mu = beta0 + beta1*fixed_acidity + beta2*volatile_acidity
+        + beta3*citric_acid + beta4*residual_sugar
+        + beta5*chlorides + beta6*free_sulfur_dioxide
+        + beta7*total_sulfur_dioxide + beta8*density
+        + beta9*pH + beta10*sulphates + beta11*alcohol
+        + beta12*alcohol_volatile + beta13*sulphates_alcohol;
+    
+    /* 가능도 함수 */
+    model quality ~ normal(mu, var=sigma2);
+    
+    /* 사후 예측 분포 */
+    predict mu out=pred_inter;
+run;
+ods graphics off;
+
+/* 5. 모델 비교 */
+/* DIC 값 추출 */
+proc sql;
+    create table dic_compare as
+    select 'Non-informative' as model, diclabel, dic from post_noninf(obs=1)
+    union all
+    select 'Weakly informative' as model, diclabel, dic from post_weak(obs=1)
+    union all
+    select 'Interaction' as model, diclabel, dic from post_inter(obs=1);
+quit;
+
+/* 모델 가중치 계산 */
+data dic_weights;
+    set dic_compare;
+    exp_dic = exp(-0.5*dic);
+    weight = exp_dic / sum(exp_dic);
+run;
+
+/* 6. 결과 시각화 */
+/* 사후 분포 플롯 */
+proc sgplot data=post_noninf;
+    histogram beta11 / transparency=0.5;
+    density beta11 / type=kernel lineattrs=(color=red);
+    title "Posterior Distribution of Alcohol Coefficient (Non-informative)";
+run;
+
+proc sgpanel data=post_weak;
+    panelby _parm_ / columns=4;
+    histogram _value_ / binwidth=0.05;
+    colaxis label="Coefficient Value";
+    title "Posterior Distributions of Coefficients (Weakly Informative)";
+run;
+
+/* 예측 성능 평가 */
+proc sgplot data=pred_weak;
+    scatter x=quality y=pmean / markerattrs=(color=blue);
+    lineparm x=0 y=0 slope=1 / lineattrs=(color=red);
+    title "Predicted vs Observed Values";
+    xaxis label="Observed Quality";
+    yaxis label="Predicted Quality";
+run;
