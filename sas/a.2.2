@@ -1,0 +1,69 @@
+/* 1. 데이터 준비 */
+proc import datafile="DJI_weekly.csv" out=dji dbms=csv replace;
+  getnames=yes;
+run;
+
+data dji;
+  set dji;
+  date = input(Date, anydtdte20.);
+  format date date9.;
+run;
+
+proc sort data=dji;
+  by date;
+run;
+
+/* 결측치 처리 */
+proc expand data=dji out=dji_clean method=step;
+  id date;
+  convert Close / transformout=(log);
+run;
+
+/* 로그 수익률 계산 */
+data dji_clean;
+  set dji_clean;
+  log_return = log(Close) - lag(log(Close));
+run;
+
+/* 이상치 제거 */
+proc univariate data=dji_clean;
+  var log_return;
+  output out=quartiles pctlpts=25 75 pctlpre=P_;
+run;
+
+data dji_clean;
+  if _N_=1 then set quartiles;
+  set dji_clean;
+  iqr = P_75 - P_25;
+  if log_return < (P_25 - 1.5*iqr) or log_return > (P_75 + 1.5*iqr) then delete;
+run;
+
+/* 2. 시계열 분해 */
+proc timeseries data=dji_clean outdecomp=decomp;
+  id date interval=week;
+  var log_return;
+  decomp / mode=add;
+run;
+
+/* 3. ARIMA 모델 선택 및 예측 */
+proc arima data=dji_clean;
+  identify var=log_return nlag=52;
+  estimate p=(1:5) q=(1:5) method=ml;
+  forecast lead=8 alpha=0.01 out=forecast;
+run;
+
+/* 4. GARCH(1,1) 분석 */
+proc autoreg data=dji_clean;
+  model log_return = / noint garch=(q=1,p=1) dist=t;
+  output out=garch_out ht=volatility;
+run;
+
+/* 시각화 */
+proc sgplot data=forecast;
+  series x=date y=log_return / lineattrs=(color=blue);
+  series x=date y=forecast / lineattrs=(color=red);
+run;
+
+proc sgplot data=garch_out;
+  series x=date y=volatility / lineattrs=(color=green);
+run;
