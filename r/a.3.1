@@ -1,0 +1,78 @@
+# 1. 라이브러리 로드
+library(tidyverse)
+library(factoextra)
+library(cluster)
+library(fpc)
+
+# 2. 데이터 로드 및 전처리
+data(iris)
+df <- iris %>% select(-Species)
+
+# 이상치 처리 (IQR 1.5)
+Q1 <- apply(df, 2, quantile, 0.25)
+Q3 <- apply(df, 2, quantile, 0.75)
+IQR <- Q3 - Q1
+mask <- apply(df, 1, function(x) all(x >= Q1-1.5*IQR & x <= Q3+1.5*IQR))
+df_clean <- df[mask, ]
+
+# Z-점수 표준화
+df_scaled <- scale(df_clean)
+
+# 3. 주성분 분석
+pca <- prcomp(df_scaled, scale=FALSE)
+eig <- get_eig(pca)
+
+# 스크리 플롯
+fviz_eig(pca, addlabels=TRUE, ncp=4) + 
+  labs(title="Scree Plot")
+
+# 변수 기여도
+loadings <- pca$rotation[,1:2]
+print("PCA Loadings:")
+print(loadings)
+
+# Biplot
+fviz_pca_biplot(pca, geom.ind="point", 
+                col.ind=iris$Species[mask],
+                palette="jco",
+                addEllipses=TRUE) +
+  labs(title="PCA Biplot")
+
+# 4. 군집 분석
+# K-means
+set.seed(123)
+km <- kmeans(df_scaled, centers=3, nstart=25)
+
+# 계층적 군집
+hc <- hclust(dist(df_scaled), method="ward.D2")
+hc_clusters <- cutree(hc, k=3)
+
+# 평가 지표
+sil_km <- silhouette(km$cluster, dist(df_scaled))
+sil_hc <- silhouette(hc_clusters, dist(df_scaled))
+
+dunn_km <- dunn(dist(df_scaled), km$cluster)
+dunn_hc <- dunn(dist(df_scaled), hc_clusters)
+
+# 결과표
+result_df <- data.frame(
+  Method = c("K-means", "Hierarchical"),
+  Silhouette = c(mean(sil_km[,3]), mean(sil_hc[,3])),
+  Dunn = c(dunn_km, dunn_hc)
+)
+print(result_df)
+
+# 5. 시각화
+# PCA 공간 클러스터 오버레이
+pca_df <- data.frame(pca$x[,1:2], 
+                     Species=iris$Species[mask],
+                     KMeans=as.factor(km$cluster),
+                     Hierarchical=as.factor(hc_clusters))
+
+ggplot(pca_df, aes(PC1, PC2)) +
+  geom_point(aes(color=KMeans), size=3) +
+  labs(title="K-means Clusters in PCA Space")
+
+ggplot(pca_df, aes(PC1, PC2)) +
+  geom_point(aes(color=Hierarchical), size=3) +
+  labs(title="Hierarchical Clusters in PCA Space")
