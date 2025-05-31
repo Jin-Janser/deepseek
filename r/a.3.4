@@ -1,0 +1,131 @@
+# 필요한 패키지 설치 및 로드
+install.packages(c("tidyverse", "KernSmooth", "boot", "quantreg", "DescTools"))
+library(tidyverse)
+library(KernSmooth)
+library(boot)
+library(quantreg)
+library(DescTools)
+
+# 재현 가능성을 위한 시드 설정
+set.seed(123)
+
+# 가상 데이터 생성
+n <- 5000
+
+income_data <- tibble(
+  gender = sample(c("Male", "Female"), n, replace = TRUE, prob = c(0.52, 0.48)),
+  education = factor(sample(c("High School", "Bachelor", "Master", "PhD"), n, 
+                          prob = c(0.4, 0.35, 0.2, 0.05), replace = TRUE),
+                   levels = c("High School", "Bachelor", "Master", "PhD")),
+  experience = pmax(0, rnorm(n, 15, 8)),
+  age = pmax(22, pmin(65, rnorm(n, 40, 12))),
+  income = NA
+)
+
+# 교육 수준별 기본 소득 설정
+edu_mult <- c("High School" = 1, "Bachelor" = 1.4, 
+             "Master" = 1.8, "PhD" = 2.3)
+
+# 소득 계산 (로그정규분포 기반)
+income_data <- income_data %>%
+  mutate(
+    base_income = 45000 * edu_mult[education],
+    gender_mult = ifelse(gender == "Male", 1.0, 0.82),
+    income = base_income * gender_mult * (1 + 0.015 * experience) *
+      rlnorm(n, meanlog = 0, sdlog = 0.35)
+  ) %>%
+  filter(income > 25000, income < 500000) %>%
+  select(-base_income, -gender_mult)
+
+# 결측치 처리 (2% 결측)
+income_data$income[sample(1:n, n*0.02)] <- NA
+income_data <- income_data %>% drop_na()
+
+# 교육 수준 수치화
+education_years <- c("High School" = 12, "Bachelor" = 16, 
+                    "Master" = 18, "PhD" = 22)
+income_data$edu_years <- education_years[income_data$education]
+
+# 최적 대역폭 계산 함수
+calculate_optimal_bw <- function(data) {
+  log_income <- log(data)
+  dpik(log_income, scalest = "minim", kernel = "normal")
+}
+
+# 전체 데이터 최적 대역폭
+overall_bw <- calculate_optimal_bw(income_data$income)
+
+# 그룹별 밀도 추정
+density_by_group <- function(data, group_var) {
+  data %>%
+    group_by({{group_var}}) %>%
+    summarise(
+      density = list(density(log(income), bw = calculate_optimal_bw(income))),
+      .groups = "drop"
+    )
+}
+
+gender_density <- density_by_group(income_data, gender)
+edu_density <- density_by_group(income_data, education)
+
+# 밀도 플롯 생성 함수
+plot_density <- function(density_data, group_var, title) {
+  ggplot(density_data, aes(x = exp(x), y = y, color = {{group_var}})) +
+    geom_line() +
+    scale_x_continuous(labels = scales::dollar) +
+    labs(title = title, x = "Income", y = "Density") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+# 성별 밀도 플롯
+gender_plot <- gender_density %>%
+  mutate(x = map(density, ~.x$x), y = map(density, ~.x$y)) %>%
+  unnest(c(x, y)) %>%
+  plot_density(gender, "Income Distribution by Gender")
+
+# 교육 수준 밀도 플롯
+edu_plot <- edu_density %>%
+  mutate(x = map(density, ~.x$x), y = map(density, ~.x$y)) %>%
+  unnest(c(x, y)) %>%
+  plot_density(education, "Income Distribution by Education Level")
+
+gridExtra::grid.arrange(gender_plot, edu_plot, ncol = 2)
+
+# 분위 회귀 모델
+quantiles <- c(0.1, 0.5, 0.9)
+qr_models <- map(quantiles, ~rq(income ~ edu_years + experience, 
+                               data = income_data, tau = .x))
+
+# OLS 모델
+ols_model <- lm(income ~ edu_years + experience, data = income_data)
+
+# 결과 요약
+extract_results <- function(model) {
+  broom::tidy(model, conf.int = TRUE) %>%
+    filter(term != "(Intercept)") %>%
+    select(term, estimate, p.value)
+}
+
+results_comparison <- map_dfr(qr_models, extract_results, .id = "Quantile") %>%
+  mutate(Quantile = quantiles[as.numeric(Quantile)]) %>%
+  bind_rows(
+    extract_results(ols_model) %>% mutate(Quantile = "OLS")
+  )
+
+# 분위 회귀 계수 비교
+ggplot(results_comparison, aes(x = Quantile, y = estimate, color = term)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  facet_wrap(~term, scales = "free_y") +
+  labs(title = "Quantile Regression Coefficients Comparison",
+       x = "Quantile", y = "Estimate") +
+  theme_bw()
+
+# 불평등 지수 시각화
+ggplot(inequality_table, aes(x = Measure, y = Estimate)) +
+  geom_col(fill = "steelblue", width = 0.6) +
+  geom_errorbar(aes(ymin = CI_Lower, ymax = CI_Upper), width = 0.2) +
+  labs(title = "Income Inequality Indices with 95% CIs",
+       y = "Value") +
+  theme_minimal()
