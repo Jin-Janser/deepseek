@@ -1,0 +1,49 @@
+# 필요한 패키지 설치 및 로드
+library(forecast)
+library(rugarch)
+library(ggplot2)
+library(zoo)
+
+# 1. 데이터 준비
+dji <- read.csv("DJI_weekly.csv", stringsAsFactors = FALSE)
+dji$Date <- as.Date(dji$Date)
+dji <- dji[order(dji$Date), ]
+
+# 결측치 처리 (선형 보간)
+dji$Close <- na.approx(dji$Close)
+
+# 로그 수익률 계산
+dji$log_return <- c(NA, diff(log(dji$Close)))
+
+# 이상치 제거 (IQR 기준)
+Q <- quantile(dji$log_return, probs = c(0.25, 0.75), na.rm = TRUE)
+IQR <- Q[2] - Q[1]
+dji_clean <- subset(dji, log_return > (Q[1] - 1.5*IQR) & log_return < (Q[2] + 1.5*IQR))
+
+# 2. 시계열 분해 (STL)
+ts_data <- ts(dji_clean$log_return, frequency = 52)
+stl_decomp <- stl(ts_data, s.window = "periodic", robust = TRUE)
+
+# 시각화
+autoplot(stl_decomp) + ggtitle("STL Decomposition")
+
+# 3. ARIMA 모델링
+best_arima <- auto.arima(ts_data, seasonal = FALSE)
+arima_forecast <- forecast(best_arima, h = 8)
+
+# 결과 출력
+summary(best_arima)
+autoplot(arima_forecast)
+
+# 4. GARCH(1,1) 분석
+garch_spec <- ugarchspec(
+  variance.model = list(model = "sGARCH", garchOrder = c(1,1)),
+  mean.model = list(armaOrder = c(0,0)),
+  distribution.model = "std"
+)
+
+garch_fit <- ugarchfit(garch_spec, dji_clean$log_return)
+garch_vol <- sigma(garch_fit)
+
+# 결과 출력
+plot(garch_vol, main = "Conditional Volatility (GARCH(1,1))")
