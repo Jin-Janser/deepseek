@@ -1,0 +1,125 @@
+# 패키지 설치 (필요시 주석 해제)
+# install.packages(c("tidyverse", "brms", "sf", "spdep", "loo", "bayesplot"))
+
+# 데이터 생성
+set.seed(42)
+n_regions <- 50
+years <- 2000:2020
+age_groups <- c("20-39", "40-59", "60-79", "80+")
+races <- c("White", "Black", "Hispanic", "Asian")
+
+seer_data <- expand.grid(
+  region_id = 1:n_regions,
+  year = years,
+  age = age_groups,
+  race = races
+) %>%
+  mutate(
+    # 공간 좌표 생성
+    lat = runif(n(), 32, 48),
+    lon = runif(n(), -125, -70),
+    # 인구수 (포아송 분포)
+    population = rpois(n(), 5000) + 1000,
+    # 기본 발생률 (위도 효과 포함)
+    base_rate = 50 + 20*sin(lat*pi/180),
+    # 연령 효과
+    age_effect = case_when(
+      age == "80+" ~ 2.5,
+      age == "60-79" ~ 1.8,
+      age == "40-59" ~ 1.2,
+      TRUE ~ 0.5
+    ),
+    # 인종 효과
+    race_effect = case_when(
+      race == "Black" ~ 1.3,
+      race == "Asian" ~ 0.7,
+      TRUE ~ 1.0
+    ),
+    # 관측 케이스 생성
+    cases = rpois(n(), (base_rate * age_effect * race_effect * population)/1e5)
+  )
+
+# 결측치 처리 (5% 무작위 결측)
+seer_data$cases[sample(1:nrow(seer_data), nrow(seer_data)*0.05)] <- NA
+seer_data <- seer_data %>% filter(!is.na(cases), population > 0)
+
+library(spdep)
+coords <- seer_data %>% 
+  distinct(region_id, lat, lon) %>% 
+  arrange(region_id) %>% 
+  select(lon, lat)
+
+# 100km 이내 인접성 기준 (1도 ≈ 111km)
+knn <- knn2nb(knearneigh(coords, k=5))
+W <- nb2listw(knn, style="W")
+
+library(brms)
+priors <- c(
+  prior(normal(0, 1), class = "b"),
+  prior(half_normal(0,1), class = "sd")
+)
+
+model_hier <- brm(
+  cases | trials(population) ~ age + race + (1|region_id),
+  family = binomial(link="logit"),
+  data = seer_data,
+  prior = priors,
+  chains=4, iter=2000, warmup=1000,
+  control=list(adapt_delta=0.95)
+)
+
+model_spatial <- brm(
+  cases | trials(population) ~ age + race + car(W),
+  data = seer_data,
+  family = binomial(link="logit"),
+  prior = priors,
+  chains=4, iter=2000
+)
+
+library(tmap)
+regional_effects <- ranef(model_spatial)$region_id[,,"Intercept"]
+risk_map <- tm_shape(usa_map) +
+  tm_polygons() +
+  tm_bubbles(
+    data = regional_effects,
+    col = "Estimate",
+    size = "Estimate",
+    palette = "RdBu",
+    midpoint = 0
+  )
+
+# 전체 분석 파이프라인
+library(tidyverse)
+library(brms)
+library(sf)
+library(spdep)
+
+# 1. 데이터 생성 및 전처리
+# [위 데이터 생성 코드 포함]
+
+# 2. 계층적 모델
+model_hier <- brm(
+  cases | trials(population) ~ age + race + (1|region_id),
+  family = binomial(),
+  data = seer_data,
+  prior = c(
+    prior(normal(0,1), class="b"),
+    prior(half_normal(0,1), class="sd")
+  ),
+  chains=4, iter=2000
+)
+
+# 3. 공간 모델
+model_spatial <- brm(
+  cases | trials(population) ~ age + race + car(W),
+  data = seer_data,
+  family = binomial(),
+  prior = priors,
+  chains=4, iter=2000
+)
+
+# 4. 모델 비교
+loo_compare(loo(model_hier), loo(model_spatial))
+
+# 5. 시각화
+# [위 시각화 코드 포함]
