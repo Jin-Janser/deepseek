@@ -1,0 +1,14 @@
+proc ttest data=vaccine;
+  class Region;
+  var DTP3;
+run;
+
+proc reg data=mcv1;
+  model Coverage_Rate = Year / clb;
+run;
+
+proc glm data=all_vaccines;
+  class Vaccine_Type;
+  model Coverage_Rate = Vaccine_Type;
+  lsmeans Vaccine_Type / pdiff adjust=tukey;
+run;
